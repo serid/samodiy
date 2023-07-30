@@ -102,7 +102,7 @@ newtype Parser t a = Parser { unParser :: Ap (ParserOp t) a }
 type CompiledParser t a = [t] -> Either ExpectedTokens ([t], a)
 
 showExpectedTokens :: ExpectedTokens -> Text
-showExpectedTokens = joinToString >>> append "Expected: "
+showExpectedTokens s = fmt "Errors encountered: [%]" [joinToString s]
 
 runParser :: Eq t => Parser t a -> [t] -> Either Text a
 runParser = (mapLeft showExpectedTokens .) . execParser

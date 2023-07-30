@@ -49,10 +49,7 @@ tests = [
 
 testReductionK :: MyTest ()
 testReductionK = do
-    -- reductionTest "let" ""
-    let result = whnf $ apply (lam [builtin IntType, builtin IntType] (var 0)) [builtin $ BInt 42, builtin $ BInt 127]
-    actual <- inject result
-    liftIO $ assertEqual "" (builtin $ BInt 127) actual
+    reductionTest "do fun(a, b) b end (42, 127)" "127"
 
 testSubstitutionInsideForall :: MyTest ()
 testSubstitutionInsideForall = do
