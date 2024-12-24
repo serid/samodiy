@@ -22,6 +22,7 @@ import Data.Bool (bool)
 import Control.Arrow ((>>>))
 import Control.Applicative.Free (Ap (..), runAp_)
 import qualified Data.List (singleton)
+import Util.ShowText (ShowText (showText))
 
 -- Free(er) applicative functor, does not require "f" to be functorial!
 -- data FreeA f a =
@@ -61,13 +62,13 @@ one x = Ap x (Pure id)
 -- Base type constructor for parsers
 -- "t" -- token type
 -- "a" -- result type
-data ParserOp t a where
-    ZeroP :: ParserOp t Void
-    MapErrorP :: (ExpectedTokens -> ExpectedTokens) -> Parser t a -> ParserOp t a
-    TokenP :: (t -> Maybe a) -> ParserOp t a
-    NotP :: Parser t () -> ParserOp t ()
-    ChooseP :: [Parser t a] -> ParserOp t a
-    FixP :: (Parser t a -> Parser t a) -> ParserOp t a
+data ParserOp t e a where
+    FailP :: e -> ParserOp t e Void
+    MapErrorP :: (e -> e) -> Parser t e a -> ParserOp t e a
+    TokenP :: (t -> Maybe a) -> ParserOp t e a
+    NotP :: Parser t e () -> ParserOp t e ()
+    ChooseP :: [Parser t e a] -> ParserOp t e a
+    FixP :: (Parser t e a -> Parser t e a) -> ParserOp t e a
 -- makeBaseFunctor ''ParserOp
 
 -- data ParserOp t a =
@@ -76,43 +77,41 @@ data ParserOp t a where
 --     | ChooseP (Parser t a) (Parser t a)
 --     | FixP (Parser t a -> Parser t a)
 
-zeroP :: Parser t Void
-zeroP = Parser $ one ZeroP
+failP :: Parser t e Void
+failP = Parser . one . TokenP
 
-mapErrorP :: (ExpectedTokens -> ExpectedTokens) -> Parser t a -> Parser t a
+mapErrorP :: (e -> e) -> Parser t e a -> Parser t e a
 mapErrorP = ((Parser . one) .) . MapErrorP
 
-tokenP :: (t -> Maybe a) -> Parser t a
+tokenP :: (t -> Maybe a) -> Parser t e a
 tokenP = Parser . one . TokenP
 
-notP :: Parser t () -> Parser t ()
+notP :: Parser t e () -> Parser t e ()
 notP = Parser . one . NotP
 
-chooseP :: [Parser t a] -> Parser t a
+chooseP :: [Parser t e a] -> Parser t e a
 chooseP = Parser . one . ChooseP
 
-fixP :: (Parser t a -> Parser t a) -> Parser t a
+fixP :: (Parser t e a -> Parser t e a) -> Parser t e a
 fixP = Parser . one . FixP
 
-type ExpectedTokens = [Text]
-
-newtype Parser t a = Parser { unParser :: Ap (ParserOp t) a }
+newtype Parser t e a = Parser { unParser :: Ap (ParserOp t e) a }
     deriving (Functor, Applicative)
 
-type CompiledParser t a = [t] -> Either ExpectedTokens ([t], a)
+type CompiledParser t e a = [t] -> Either e ([t], a)
 
-showExpectedTokens :: ExpectedTokens -> Text
-showExpectedTokens = joinToString >>> append "Expected: "
+-- showExpectedTokens :: ExpectedTokens -> Text
+-- showExpectedTokens s = fmt "Errors encountered: [%]" [joinToString s]
 
-runParser :: Eq t => Parser t a -> [t] -> Either Text a
+runParser :: Eq t => Parser t e a -> [t] -> Either Text a
 runParser = (mapLeft showExpectedTokens .) . execParser
 
-execParser :: Eq t => Parser t a -> [t] -> Either ExpectedTokens a
+execParser :: Eq t => Parser t e a -> [t] -> Either e a
 execParser p = evalParser p >=> \case
     ([], r) -> Right r
     (_ : _, _) -> Left ["<eof>"]
 
-evalParser :: Eq t => Parser t a -> CompiledParser t a
+evalParser :: Eq t => Parser t e a -> CompiledParser t e a
 evalParser (Parser (Pure a)) = \ts -> Right (ts, a)
 evalParser (Parser (Ap x k)) =
     let compiledK = evalParser (Parser k) in
@@ -121,8 +120,8 @@ evalParser (Parser (Ap x k)) =
     (tsss, f) <- compiledK tss
     pure (tsss, f b)
 
-algebra1 :: Eq t => ParserOp t a -> CompiledParser t a
-algebra1 ZeroP = const $ Left ["Zero error"]
+algebra1 :: (Eq t, ShowText e) => ParserOp t e a -> CompiledParser t e a
+algebra1 e1 = const $ Left [showText e1]
 algebra1 (MapErrorP newText p) =
     let compiledP1 = evalParser p in
     mapLeft newText . compiledP1
@@ -137,7 +136,7 @@ algebra1 (NotP p) =
 algebra1 (ChooseP ps) =
     let compiledPs = map evalParser ps in go compiledPs
     where
-        go :: Eq t => [CompiledParser t a] -> CompiledParser t a
+        go :: Eq t => [CompiledParser t e a] -> CompiledParser t e a
         go [] = evalParser (vacuous zeroP)
         go (cp : cps) = \ts -> case cp ts of
             Left expected1 -> mapLeft (expected1 <>) (go cps ts)
@@ -145,11 +144,11 @@ algebra1 (ChooseP ps) =
 algebra1 arg@(FixP pf) =
     evalParser (pf (Parser $ one arg))
 
-showParser :: Parser t a -> Text
+showParser :: Parser t e a -> Text
 showParser = joinToString . runAp_ (Data.List.singleton . natur) . unParser
     where
-        natur :: ParserOp t a -> Text
-        natur ZeroP = "zero"
+        natur :: ParserOp t e a -> Text
+        natur (e1) = showText e1
         natur (MapErrorP _ p) = fmt "MapErrorP(_, %)" [showParser p]
         natur (TokenP _) = "TokenP(_)"
         natur (NotP p) = fmt "NotP(%, %)" [showParser p]
@@ -168,64 +167,61 @@ showParser = joinToString . runAp_ (Data.List.singleton . natur) . unParser
 
 -- simplify :: Parser t a -> Parser t a
 
-failP :: Text -> Parser t Void
-failP err = mapErrorP (const [err]) zeroP
-
-tryP :: Parser t () -> Parser t ()
+tryP :: Parser t e () -> Parser t e ()
 tryP = chooseP . (: [pure ()])
 
-annotateErrorP :: Text -> Parser t a -> Parser t a
+annotateErrorP :: Text -> Parser t e a -> Parser t e a
 annotateErrorP err = mapErrorP (const [err])
 -- annotateErrorP err = (`chooseP` (vacuous $ failP err))
 
-tokenP2 :: Text -> (t -> Maybe a) -> Parser t a
+tokenP2 :: Text -> (t -> Maybe a) -> Parser t e a
 tokenP2 err = annotateErrorP err . tokenP
 
 -- tokenP2 :: Text -> (t -> Maybe a) -> FreeA (ParserOp t) a
 -- tokenP2 err = annotateErrorP err . tokenP
 
-tokenPBool :: (t -> Bool) -> Parser t t
+tokenPBool :: (t -> Bool) -> Parser t e t
 tokenPBool predicate = tokenP \t -> bool Nothing (Just t) (predicate t)
 
-tokenP2Bool :: Text -> (t -> Bool) -> Parser t t
+tokenP2Bool :: Text -> (t -> Bool) -> Parser t e t
 tokenP2Bool err = annotateErrorP err . tokenPBool
 
-tokenOneP :: Eq t => t -> Parser t t
+tokenOneP :: Eq t => t -> Parser t e t
 tokenOneP = tokenPBool . (==)
 
-tokenOneP2 :: Eq t => Text -> t -> Parser t t
+tokenOneP2 :: Eq t => Text -> t -> Parser t e t
 tokenOneP2 err = tokenP2Bool err . (==)
 
-someFromBoundMany :: Parser t [a] -> Parser t a -> Parser t [a]
+someFromBoundMany :: Parser t e [a] -> Parser t e a -> Parser t e [a]
 someFromBoundMany boundMany p = do
     x <- p
     xs <- boundMany
     pure (x : xs)
 
-manyP :: Parser t a -> Parser t [a]
+manyP :: Parser t e a -> Parser t e [a]
 manyP p = fixP \self ->
     let boundSome = someFromBoundMany self p
     in chooseP [boundSome, pure []]
 
-someP :: Parser t a -> Parser t [a]
+someP :: Parser t e a -> Parser t e [a]
 someP p = someFromBoundMany (manyP p) p
 
-oneOfP :: [Parser t a] -> Parser t a
+oneOfP :: [Parser t e a] -> Parser t e a
 oneOfP = chooseP
 
-alphaP :: Parser Char Char
+alphaP :: Parser Char e Char
 alphaP = tokenP2Bool "<alpha>" isAlpha
 
-digitP :: Parser Char Char
+digitP :: Parser Char e Char
 digitP = tokenP2Bool "<digit>" isDigit
 
-keywordP :: String -> Parser Char String
+keywordP :: String -> Parser Char e String
 keywordP kw = traverse_ (\c -> tokenP2Bool (singleton c) (== c)) kw $> kw
 
-keywordP' :: String -> Parser Char ()
+keywordP' :: String -> Parser Char e ()
 keywordP' kw = keywordP kw $> ()
 
-intP :: Parser Char Word
+intP :: Parser Char e Word
 intP = foldl' (+) 0 . zipWith (*) powers . reverse <$> wordDigits
     where
         wordDigits = someP (fromIntegral . digitToInt <$> digitP)

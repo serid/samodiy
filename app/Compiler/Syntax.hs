@@ -4,7 +4,7 @@
 {-# HLINT ignore "Use <$>" #-}
 
 module Compiler.Syntax where
-import Util.Free (Parser, manyP, chooseP, alphaP, digitP, keywordP, oneOfP, execParser, ExpectedTokens, intP, tokenP2, tokenOneP, tokenOneP2, tokenPBool, someP, tokenP)
+import Util.Free (Parser, manyP, chooseP, alphaP, digitP, keywordP, oneOfP, execParser, intP, tokenP2, tokenOneP, tokenOneP2, tokenPBool, someP, tokenP)
 import Data.Text (Text, pack)
 import Data.Functor (($>), (<&>))
 import Control.Lens (makePrisms, (^?))
@@ -36,6 +36,17 @@ data Token =
     | TString !Text
     deriving (Show, Eq)
 makePrisms ''Token
+
+data Span = Span { sStart :: Word, sEnd :: Word }
+
+data ParseError = ParseError {
+    peSpan :: Span,
+    pePe :: ParseError2
+}
+
+data ParseError2 =
+    PError Text
+    | PExpectedToken Text
 
 tokenize :: String -> Either ExpectedTokens [Token]
 tokenize = execParser tokenizer
